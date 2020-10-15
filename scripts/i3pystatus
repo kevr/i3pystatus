@@ -1,0 +1,239 @@
+#!/usr/bin/python3
+import logging
+import sys, os
+import traceback
+import re
+import time
+from datetime import datetime
+from subprocess import Popen, PIPE
+import argparse
+
+def execute(command, *args, **kwargs):
+    proc = Popen([command] + list(args), stdout=PIPE, stderr=PIPE)
+    out, err = proc.communicate()
+    if proc.returncode != 0:
+        raise OSError("%s returned %d" % (command, proc.returncode))
+    return out.decode()
+
+def get_user():
+    user = os.environ.get("USER")
+    hostname = "localhost"
+    with open("/etc/hostname") as f:
+        hostname = f.read().rstrip()
+    return "%s [%s]" % (user, hostname)
+
+def get_memory():
+    # Fetch different metric fields (which are in kB) and convert
+    # them into mB by dividing by 1000. This requires some forced
+    # integer casting: first, from a string, and second from after
+    # the division, which is a floating point result.
+    total, free, available = 0, 0, 0
+    with open("/proc/meminfo") as f:
+        data = f.readlines()
+        match = re.match(r'^MemTotal:\s+(\d+) kB$', data[0])
+        total = int(int(match[1]) / 1000)
+
+        match = re.match(r'^MemFree:\s+(\d+) kB$', data[1])
+        free = int(int(match[1]) / 1000)
+
+        match = re.match(r'^MemAvailable:\s+(\d+) kB$', data[2])
+        available = int(int(match[1]) / 1000)
+
+    used_memory = total - available
+    return "%s/%s GB" % (
+        "{:.1f}".format(used_memory / 1000),
+        "{:.1f}".format(total / 1000)
+    )
+
+def get_processors():
+    output = execute("lscpu").split("\n")
+
+    speeds = []
+    for line in output:
+        match = re.match(r'^.*:\s+?([0-9.]+)$', line)
+        if match:
+            speeds.append(float(match[1]))
+
+    # Average CPU speed in MHz.
+    avg_speed = int(sum(speeds) / len(speeds))
+
+    # Get avg temperature.
+    output = None
+    try:
+        output = execute("sensors").split("\n")
+    except Exception as exc:
+        logging.error(str(exc))
+
+    temp = "NA"
+    if output:
+        output = [e for e in output if e.startswith("Core")]
+        temps = []
+        for line in output:
+            match = re.match(r'^Core \d+:\s+?[+]([0-9.]+)°C.*$', line)
+            if match:
+                temps.append(float(match[1]))
+        temp = int(sum(temps) / len(temps))
+
+    return "{} MHz ({}°C)".format(avg_speed, temp)
+
+def get_datetime():
+    now = datetime.now()
+    return now.strftime("%a %m/%d/%Y %I:%M:%S %p " + now.astimezone().tzname())
+
+def segment_route(line):
+    segments = line.split(" ")
+    route = { "dest": segments[0] }
+    segments = segments[1:]
+
+    def field_func(segments):
+        key = segments[0]
+        value = segments[1]
+        segments = segments[2:]
+        return segments, key, value
+
+    actions = {
+        "via": field_func,
+        "dev": field_func,
+        "src": field_func
+    }
+
+    while len(segments):
+        key = segments[0]
+        if key in actions:
+            f = actions[key]
+            segments, k, v = f(segments)
+            route[k] = v
+        else:
+            segments = segments[1:]
+
+    return route
+
+def get_lan_ip():
+    ''' Note: This function needs improvement to account for network
+    setups with more than one IP address or active interface. '''
+    ip = "127.0.0.1"
+    output = execute("ip", "route").split("\n")
+
+    default = segment_route(output[0])
+    if default["dest"] != "default":
+        return ip
+
+    iface = default["dev"]
+
+    output = output[1:] # Truncate the default route.
+    for line in output:
+        route = segment_route(line)
+        dest = route["dest"]
+        # Hackily check the first three characters of both addresses.
+        # We should check this more completely including accounting
+        # for the /[0-32] block at the end of a dest string.
+        if dest[:3] == default["via"][:3] and "src" in route:
+            ip = route["src"]
+            iface = route["dev"]
+    return ip
+
+# Convert to GB
+size_convert = {
+    "M": lambda size: size / 1000,
+    "G": lambda size: size,
+    "T": lambda size: size * 1000
+}
+
+def get_size_in_gb(match):
+    unit = match[-1]
+    value = float(match[:-1])
+    return size_convert[unit](value)
+
+def get_disks():
+    to_include = { "/", "/home", "/var" }
+    output = execute("df", "-h").split("\n")
+
+    total_size = 0
+    total_used = 0
+    count = 0
+    sizes = []
+    used = []
+    items = []
+    for line in output:
+        match = re.match(
+            r'^.+\s+([0-9.]+.)\s+([0-9.]+.)\s+([0-9.]+.)\s+\d+[%]\s+(.+)$',
+            line
+        )
+        if match and match[4] in to_include:
+            sizes.append(get_size_in_gb(match[1]))
+            used.append(get_size_in_gb(match[2]))
+
+    return "{:.1f}/{:.1f} GB".format(sum(used), sum(sizes))
+
+def get_status(delim=" | "):
+    ''' Prepare a full status string by combining a list of
+    selected strings (functions above) into one big string,
+    separated by the delimiter chosen.
+
+    @param delim Delimiter separating each status field.
+    @returns A formatted status string. '''
+
+    # Prepare a list of fields, each consisting of a tuple of
+    # (OptionalLabel, FieldValueString).
+    fields = [
+        (None, get_user()),
+        ("LAN IP", get_lan_ip()),
+        ("CPU", get_processors()),
+        ("RAM", get_memory()),
+        ("Disk", get_disks()),
+        (None, get_datetime())
+    ]
+    return delim.join([
+        ("%s: %s" % item) if item[0] else item[1]
+        for item in fields
+    ])
+
+def setup_logging(logfile_path, level=logging.INFO):
+    # Setup logging to output to $HOME/.i3bar.log.
+    logging.basicConfig(level=level, filename=logfile_path)
+
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--interval", "-i",
+            dest="interval",
+            help="Interval timeout (in seconds).",
+            default="5")
+    parser.add_argument("--log-path", "-l",
+            dest="logfile_path",
+            help="Logfile path (default: ~/.i3pystatus.log)",
+            default=os.path.join(os.environ.get("HOME"), ".i3pystatus.log"))
+    parser.add_argument("--verbose", "-v",
+            action="store_const",
+            const=True,
+            help="Enable verbose logging.",
+            default=False)
+    args = parser.parse_args()
+    level = logging.DEBUG if args.verbose else logging.INFO
+    setup_logging(args.logfile_path, level=level)
+
+    interval = float(args.interval)
+
+    ''' Main entry point for the program. In an infinite loop,
+    print out the current get_status() value, flush stdout,
+    then sleep for 1.5 seconds before the next iteration. '''
+    while True:
+        status = get_status()
+        print(status, flush=True)
+        time.sleep(interval)
+    return 0
+
+if __name__ == "__main__":
+    e = 1 # Default return code.
+    try:
+        # Try to execute main and update the return code.
+        e = main()
+    except Exception as exc:
+        # If an exception is caught, print out the traceback
+        # and set the return code back to 1, to safely return
+        # with an error.
+        logging.error(
+            "Caught root Exception (traceback below)!\n\n%s"
+            % traceback.format_exc()
+        )
+        e = 1
+    exit(e)
