@@ -1,0 +1,6 @@
+*.pyc
+
+/build/
+/dist/
+/i3pystatus.egg-info/
+
