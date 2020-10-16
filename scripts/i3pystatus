@@ -132,17 +132,16 @@ def get_lan_ip():
             iface = route["dev"]
     return ip
 
-# Convert to GB
-size_convert = {
-    "M": lambda size: size / 1000,
-    "G": lambda size: size,
-    "T": lambda size: size * 1000
-}
-
 def get_size_in_gb(match):
+    # Conversion table (to GB).
+    convert = { "M": 0.001, "G": 1, "T": 1000 }
+
     unit = match[-1]
+    if not unit in convert:
+        raise ValueError("Unable to convert '%s' to GB" % match[0])
+
     value = float(match[:-1])
-    return size_convert[unit](value)
+    return value * convert[unit]
 
 def get_disks():
     to_include = { "/", "/home", "/var" }
@@ -194,6 +193,7 @@ def setup_logging(logfile_path, level=logging.INFO):
 
 def main():
     parser = argparse.ArgumentParser()
+
     parser.add_argument("--interval", "-i",
             dest="interval",
             help="Interval timeout (in seconds).",
@@ -207,7 +207,9 @@ def main():
             const=True,
             help="Enable verbose logging.",
             default=False)
+
     args = parser.parse_args()
+
     level = logging.DEBUG if args.verbose else logging.INFO
     setup_logging(args.logfile_path, level=level)
 
@@ -220,6 +222,7 @@ def main():
         status = get_status()
         print(status, flush=True)
         time.sleep(interval)
+
     return 0
 
 if __name__ == "__main__":
