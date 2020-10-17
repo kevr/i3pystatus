@@ -48,11 +48,21 @@ def get_memory():
 def get_processors():
     output = execute("lscpu").split("\n")
 
+    threads = []
     speeds = []
+
+    captures = {
+        r'^CPU MHz:\s+([0-9.]+)$': lambda m: speeds.append(float(m[1])),
+        r'^CPU\(s\):\s+([0-9]+)$': lambda m: threads.append(int(m[1]))
+    }
+
     for line in output:
-        match = re.match(r'^.*:\s+?([0-9.]+)$', line)
-        if match:
-            speeds.append(float(match[1]))
+        for cap, func in captures.items():
+            match = re.match(cap, line)
+            if match:
+                func(match)
+
+    threads = threads[-1]
 
     # Average CPU speed in MHz.
     avg_speed = int(sum(speeds) / len(speeds))
@@ -64,17 +74,16 @@ def get_processors():
     except Exception as exc:
         logging.error(str(exc))
 
-    temp = "NA"
+    temps = []
     if output:
         output = [e for e in output if e.startswith("Core")]
-        temps = []
         for line in output:
             match = re.match(r'^Core \d+:\s+?[+]([0-9.]+)°C.*$', line)
             if match:
                 temps.append(float(match[1]))
-        temp = int(sum(temps) / len(temps))
 
-    return "{} MHz ({}°C)".format(avg_speed, temp)
+    temp = int(max(temps)) if temps else "NA"
+    return "{} MHz ({}, {}°C)".format(avg_speed, threads, temp)
 
 def get_datetime():
     now = datetime.now()
