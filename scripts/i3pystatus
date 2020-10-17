@@ -139,7 +139,15 @@ def get_lan_ip():
         if dest[:3] == default["via"][:3] and "src" in route:
             ip = route["src"]
             iface = route["dev"]
-    return ip
+
+    speed = ''
+    output = execute("ethtool", default["dev"]).split("\n")
+    for line in output:
+        match = re.match(r'^\s+?Speed:\s+(\d+Mb/s)$', line)
+        if match:
+            speed = match[1]
+
+    return "%s @ %s" % (ip, speed)
 
 def get_size_in_gb(match):
     # Conversion table (to GB).
