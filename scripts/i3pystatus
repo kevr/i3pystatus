@@ -186,7 +186,7 @@ def get_disks():
     # Return a joined output_items, wrapped by brackets.
     return ", ".join(output_items)
 
-def get_status(delim=" | "):
+def get_status(delim=" • "):
     ''' Prepare a full status string by combining a list of
     selected strings (functions above) into one big string,
     separated by the delimiter chosen.
