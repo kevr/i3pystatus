@@ -23,6 +23,12 @@ NET_WM_NAME = display.intern_atom('_NET_WM_NAME')
 # Global window title cache, updated by x_event_loop.
 window_title = "no window title"
 
+class Color:
+    blue = None
+    red = None
+    green = None
+    yellow = None
+
 def color(text, value):
     return f'<span foreground="{value}">{text}</span>'
 
@@ -34,7 +40,10 @@ def execute(command, *args, **kwargs):
     return out.decode()
 
 def get_user():
-    return "%s [%s]" % (os.environ.get("USER"), os.uname().nodename)
+    return "%s [%s]" % (
+        color(os.environ.get("USER"), Color.yellow),
+        color(os.uname().nodename, Color.yellow)
+    )
 
 def get_memory():
     total, available = 0, 0
@@ -50,10 +59,20 @@ def get_memory():
         available = free + (buffered + cached)
 
     used_memory = total - available  # In kB
-    return "{:.1f}/{:.1f} GB".format(
-        used_memory / 1000 / 1000,
-        total / 1000 / 1000
-    )
+    if used_memory >= (total * 0.75):
+        used_memory = color(
+            "{:.1f}".format(used_memory / 1000 / 1000),
+            Color.red
+        )
+    elif used_memory >= (total * 0.50):
+        used_memory = color(
+            "{:.1f}".format(used_memory / 1000 / 1000),
+            Color.yellow
+        )
+    else:
+        used_memory = "{:.1f}".format(used_memory / 1000 / 1000)
+
+    return "{}/{:.1f} GB".format(used_memory, total / 1000 / 1000)
 
 def get_processors():
     output = execute("lscpu").split("\n")
@@ -93,7 +112,14 @@ def get_processors():
                 temps.append(float(match[1]))
 
     temp = int(max(temps)) if temps else "NA"
-    return "{} MHz ({}, {}°C)".format(avg_speed, threads, temp)
+    if temp > 65:
+        temp = color(f"{temp}°C", Color.red)
+    elif temp > 50:
+        temp = color(f"{temp}°C", Color.yellow)
+    else:
+        temp = color(f"{temp}°C", Color.green)
+
+    return "{} MHz ({}, {})".format(avg_speed, threads, temp)
 
 def get_datetime():
     now = datetime.now()
@@ -215,7 +241,7 @@ def get_status(delim=" • "):
     # (OptionalLabel, FieldValueString).
     fields = [
         (None, get_user()),
-        ("Focus", color(window_title, "#ff6666")),
+        ("Focus", window_title),
         ("LAN", get_lan_ip()),
         ("CPU", get_processors()),
         ("RAM", get_memory()),
@@ -223,7 +249,8 @@ def get_status(delim=" • "):
         (None, get_datetime())
     ]
     return delim.join([
-        ("%s: %s" % item) if item[0] else item[1]
+        "%s: %s" % (color(item[0], "#ffffff"),
+                    color(item[1], "#aaaaaa")) if item[0] else item[1]
         for item in fields
     ])
 
@@ -277,8 +304,21 @@ def main():
                         const=True,
                         help="Enable verbose logging.",
                         default=False)
-
+    parser.add_argument("--red", "-r", default="#ff9999",
+                        help="RGB hex value used for the red color")
+    parser.add_argument("--green", "-g", default="#99ff99",
+                        help="RGB hex value used for the green color")
+    parser.add_argument("--yellow", "-y", default="#fff080",
+                        help="RGB hex value used for the yellow color")
+    parser.add_argument("--blue", "-b", default="#9999ff",
+                        help="RGB hex value used for the blue color")
     args = parser.parse_args()
+
+    # Set up our color configuration.
+    Color.red = args.red
+    Color.green = args.green
+    Color.blue = args.blue
+    Color.yellow = args.yellow
 
     level = logging.DEBUG if args.verbose else logging.INFO
     setup_logging(args.logfile_path, level=level)
