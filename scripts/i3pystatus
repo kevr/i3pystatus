@@ -1,48 +1,58 @@
 #!/usr/bin/python3
 import logging
-import sys, os
+import sys
+import os
 import traceback
 import re
 import time
 from datetime import datetime
 from subprocess import Popen, PIPE
 import argparse
+from Xlib import X
+from Xlib.display import Display
+from threading import Thread
+import json
+
+# Xlib tracking globals
+display = Display()
+root = display.screen().root
+
+NET_ACTIVE_WINDOW = display.intern_atom('_NET_ACTIVE_WINDOW')
+NET_WM_NAME = display.intern_atom('_NET_WM_NAME')
+
+# Global window title cache, updated by x_event_loop.
+window_title = "no window title"
+
+def color(text, value):
+    return f'<span foreground="{value}">{text}</span>'
 
 def execute(command, *args, **kwargs):
     proc = Popen([command] + list(args), stdout=PIPE, stderr=PIPE)
-    out, err = proc.communicate()
+    out, _ = proc.communicate()
     if proc.returncode != 0:
         raise OSError("%s returned %d" % (command, proc.returncode))
     return out.decode()
 
 def get_user():
-    user = os.environ.get("USER")
-    hostname = "localhost"
-    with open("/etc/hostname") as f:
-        hostname = f.read().rstrip()
-    return "%s [%s]" % (user, hostname)
+    return "%s [%s]" % (os.environ.get("USER"), os.uname().nodename)
 
 def get_memory():
-    # Fetch different metric fields (which are in kB) and convert
-    # them into mB by dividing by 1000. This requires some forced
-    # integer casting: first, from a string, and second from after
-    # the division, which is a floating point result.
-    total, free, available = 0, 0, 0
+    total, available = 0, 0
+
     with open("/proc/meminfo") as f:
         data = f.readlines()
-        match = re.match(r'^MemTotal:\s+(\d+) kB$', data[0])
-        total = int(int(match[1]) / 1000)
 
-        match = re.match(r'^MemFree:\s+(\d+) kB$', data[1])
-        free = int(int(match[1]) / 1000)
+        total = int(re.match(r'^MemTotal:\s+(\d+) kB$', data[0])[1])
+        free = int(re.match(r'^MemFree:\s+(\d+) kB$', data[1])[1])
+        buffered = int(re.match(r'^Buffers:\s+(\d+) kB$', data[3])[1])
+        cached = int(re.match(r'^Cached:\s+(\d+) kB$', data[4])[1])
 
-        match = re.match(r'^MemAvailable:\s+(\d+) kB$', data[2])
-        available = int(int(match[1]) / 1000)
+        available = free + (buffered + cached)
 
-    used_memory = total - available
-    return "%s/%s GB" % (
-        "{:.1f}".format(used_memory / 1000),
-        "{:.1f}".format(total / 1000)
+    used_memory = total - available  # In kB
+    return "{:.1f}/{:.1f} GB".format(
+        used_memory / 1000 / 1000,
+        total / 1000 / 1000
     )
 
 def get_processors():
@@ -91,7 +101,7 @@ def get_datetime():
 
 def segment_route(line):
     segments = line.split(" ")
-    route = { "dest": segments[0] }
+    route = {"dest": segments[0]}
     segments = segments[1:]
 
     def field_func(segments):
@@ -130,7 +140,7 @@ def get_lan_ip():
     iface = default["dev"]
     block = "0"
 
-    output = output[1:] # Truncate the default route.
+    output = output[1:]  # Truncate the default route.
     for line in output:
         route = segment_route(line)
         dest = route["dest"]
@@ -150,7 +160,7 @@ def get_lan_ip():
 
 def get_size_in_gb(match):
     # Conversion table (to GB).
-    convert = { "M": 0.001, "G": 1, "T": 1000 }
+    convert = {"M": 0.001, "G": 1, "T": 1000}
 
     unit = match[-1]
     if not unit in convert:
@@ -160,20 +170,20 @@ def get_size_in_gb(match):
     return value * convert[unit]
 
 def get_disks():
-    to_include = { "/", "/home", "/var" }
+    to_include = {"/", "/home", "/var"}
     output = execute("df", "-h").split("\n")
 
-    total_size = 0
-    total_used = 0
-    count = 0
+    # total_size = 0
+    # total_used = 0
+    # count = 0
 
-    mounts = []
-    sizes = []
+    # mounts = []
+    # sizes = []
     used = []
 
     disks = []
 
-    items = []
+    # items = []
     for line in output:
         match = re.match(
             r'^.+\s+([0-9.]+.)\s+([0-9.]+.)\s+([0-9.]+.)\s+\d+[%]\s+(.+)$',
@@ -205,6 +215,7 @@ def get_status(delim=" • "):
     # (OptionalLabel, FieldValueString).
     fields = [
         (None, get_user()),
+        ("Focus", color(window_title, "#ff6666")),
         ("LAN", get_lan_ip()),
         ("CPU", get_processors()),
         ("RAM", get_memory()),
@@ -216,6 +227,36 @@ def get_status(delim=" • "):
         for item in fields
     ])
 
+def window_obj(win_id):
+    global display
+    """Simplify dealing with BadWindow (make it either valid or None)"""
+    window_obj = None
+    if win_id:
+        try:
+            window_obj = display.create_resource_object('window', win_id)
+        except:
+            pass
+        return window_obj
+
+def x_event_loop():
+    root.change_attributes(event_mask=X.PropertyChangeMask)
+    while True:
+        try:
+            event = display.next_event()
+            if not event:
+                continue
+
+            response = root.get_full_property(
+                NET_ACTIVE_WINDOW, X.AnyPropertyType)
+            win = window_obj(response.value[0])
+
+            prop = win.get_full_property(NET_WM_NAME, 0)
+
+            global window_title
+            window_title = re.sub(r'^.*[—-] ', '', prop.value.decode("UTF-8"))
+        except:
+            continue
+
 def setup_logging(logfile_path, level=logging.INFO):
     # Setup logging to output to $HOME/.i3bar.log.
     logging.basicConfig(level=level, filename=logfile_path)
@@ -224,18 +265,18 @@ def main():
     parser = argparse.ArgumentParser()
 
     parser.add_argument("--interval", "-i",
-            dest="interval",
-            help="Interval timeout (in seconds).",
-            default="5")
+                        dest="interval",
+                        help="Interval timeout (in seconds).",
+                        default="5")
     parser.add_argument("--log-path", "-l",
-            dest="logfile_path",
-            help="Logfile path (default: ~/.i3pystatus.log)",
-            default=os.path.join(os.environ.get("HOME"), ".i3pystatus.log"))
+                        dest="logfile_path",
+                        help="Logfile path (default: ~/.i3pystatus.log)",
+                        default=os.path.join(os.environ.get("HOME"), ".i3pystatus.log"))
     parser.add_argument("--verbose", "-v",
-            action="store_const",
-            const=True,
-            help="Enable verbose logging.",
-            default=False)
+                        action="store_const",
+                        const=True,
+                        help="Enable verbose logging.",
+                        default=False)
 
     args = parser.parse_args()
 
@@ -244,18 +285,30 @@ def main():
 
     interval = float(args.interval)
 
+    thread = Thread(target=x_event_loop)
+    thread.start()
+
+    print(json.dumps({"version": 1}), flush=True)
     ''' Main entry point for the program. In an infinite loop,
     print out the current get_status() value, flush stdout,
     then sleep for 1.5 seconds before the next iteration. '''
+    print("[", end="")
     while True:
         status = get_status()
-        print(status, flush=True)
+        print(json.dumps([{
+            "separator": False,
+            "full_text": status,
+            "markup": "pango"
+        }]) + ",", flush=True, end="")
         time.sleep(interval)
+
+    thread.join()
 
     return 0
 
+
 if __name__ == "__main__":
-    e = 1 # Default return code.
+    e = 1  # Default return code.
     try:
         # Try to execute main and update the return code.
         e = main()
