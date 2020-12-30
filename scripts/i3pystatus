@@ -32,12 +32,11 @@ class Color:
 def color(text, value):
     return f'<span foreground="{value}">{text}</span>'
 
-def execute(command, *args, **kwargs):
-    proc = Popen([command] + list(args), stdout=PIPE, stderr=PIPE)
+def execute(*args):
+    proc = Popen([f"/usr/bin/{args[0]}", *(args[1:])],
+                 stdout=PIPE, stderr=PIPE)
     out, _ = proc.communicate()
-    if proc.returncode != 0:
-        raise OSError("%s returned %d" % (command, proc.returncode))
-    return out.decode()
+    return out.decode("utf-8")
 
 def get_user():
     return "%s [%s]" % (
@@ -205,8 +204,6 @@ def get_disks():
 
     # mounts = []
     # sizes = []
-    used = []
-
     disks = []
 
     # items = []
@@ -239,15 +236,20 @@ def get_status(delim=" • "):
 
     # Prepare a list of fields, each consisting of a tuple of
     # (OptionalLabel, FieldValueString).
-    fields = [
-        (None, get_user()),
-        ("Focus", window_title),
-        ("LAN", get_lan_ip()),
-        ("CPU", get_processors()),
-        ("RAM", get_memory()),
-        ("Disks", get_disks()),
-        (None, get_datetime())
-    ]
+    fields = []
+
+    try:
+        fields = [
+            (None, get_user()),
+            ("Focus", window_title),
+            ("LAN", get_lan_ip()),
+            ("CPU", get_processors()),
+            ("RAM", get_memory()),
+            ("Disks", get_disks()),
+            (None, get_datetime())
+        ]
+    except Exception:
+        traceback.print_exc()
     return delim.join([
         "%s: %s" % (color(item[0], "#ffffff"),
                     color(item[1], "#aaaaaa")) if item[0] else item[1]
